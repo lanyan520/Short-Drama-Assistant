@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>媒体工具箱</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+    <!-- 左侧导航 -->
+    <nav class="sidebar">
+      <div class="brand">
+        <div class="brand-logo">⬇</div>
+        <div class="brand-name">媒体工具箱</div>
+      </div>
+      <ul class="nav">
+        <li class="nav-item active" data-view="download">
+          <span class="ni-ico">🧹</span><span class="ni-label">去水印下载</span>
+        </li>
+        <li class="nav-item" data-view="keyframe">
+          <span class="ni-ico">🎞️</span><span class="ni-label">视频关键帧导出</span>
+        </li>
+        <li class="nav-item" data-view="prompt">
+          <span class="ni-ico">✨</span><span class="ni-label">提示词自动化</span>
+        </li>
+        <li class="nav-group">
+          <div class="nav-item nav-parent" id="nav-local-parent">
+            <span class="ni-ico">🗂️</span><span class="ni-label">本地资源</span>
+            <span class="ni-arrow">▾</span>
+          </div>
+          <ul class="nav-sub open" id="nav-local-sub">
+            <li class="nav-item nav-subitem" data-kind="image">
+              <span class="ni-ico">🖼️</span><span class="ni-label">图片</span>
+            </li>
+            <li class="nav-item nav-subitem" data-kind="video">
+              <span class="ni-ico">🎬</span><span class="ni-label">视频</span>
+            </li>
+          </ul>
+        </li>
+      </ul>
+      <div class="nav-foot">v1.0 · 本地工具</div>
+    </nav>
+
+    <!-- 右侧内容区 -->
+    <div class="content">
+      <!-- ============ 去水印下载 ============ -->
+      <section class="panel active" id="panel-download">
+        <header class="topbar">
+          <div class="title">无水印下载器</div>
+          <div class="topbar-actions">
+            <button class="btn sm" id="btn-filter" title="按尺寸/大小过滤图片">🔍 图片过滤</button>
+            <button class="gear" id="btn-settings" title="设置">⚙</button>
+          </div>
+        </header>
+
+        <section class="controls">
+          <textarea id="links" rows="4" placeholder="粘贴抖音 / 小红书分享链接，或个人主页链接（douyin.com/user/xxx、xiaohongshu.com/user/profile/xxx），每行一个…"></textarea>
+          <div class="actions">
+            <button class="btn primary" id="btn-paste">粘贴并解析</button>
+            <button class="btn ghost" id="btn-parse">解析</button>
+            <button class="btn ghost" id="btn-clear">清空</button>
+          </div>
+          <div class="hint">支持单条作品链接，也支持个人主页链接——粘贴主页可一键抓取该用户全部作品。抖音免登录；小红书需先在「设置」里填 Cookie。</div>
+        </section>
+
+        <div id="banner-slot"></div>
+
+        <main id="scroll">
+          <div id="list"></div>
+          <div id="sentinel"></div>
+        </main>
+      </section>
+
+      <!-- ============ 视频关键帧导出 ============ -->
+      <section class="panel" id="panel-keyframe">
+        <header class="topbar">
+          <div class="title">视频关键帧导出</div>
+        </header>
+        <main class="panel-body">
+          <div class="module-intro">
+            <div class="mi-ico">🎞️</div>
+            <h2>视频关键帧导出</h2>
+            <p>选择本地视频，按帧间隔抽取关键帧，预览后勾选需要的帧，下载到本地目录。</p>
+          </div>
+
+          <div class="module-card">
+            <div class="mc-head">① 选择视频与参数</div>
+            <div class="mc-row">
+              <label class="mc-label">视频文件</label>
+              <div class="mc-control">
+                <button class="btn ghost" id="kf-pick">选择视频…</button>
+                <span class="mc-note" id="kf-file">未选择</span>
+              </div>
+            </div>
+            <div class="mc-row">
+              <label class="mc-label">间隔帧数</label>
+              <div class="mc-control">
+                <input type="number" id="kf-interval" min="1" value="30" style="width:120px">
+                <span class="mc-note">每 N 帧抽 1 帧（默认 30，约每秒 1 帧）</span>
+              </div>
+            </div>
+            <div class="mc-actions">
+              <button class="btn primary" id="kf-extract">抽取关键帧</button>
+            </div>
+          </div>
+
+          <div class="kf-progress" id="kf-progress" hidden>
+            <div class="pp-bar-wrap"><div class="pp-bar" id="kf-bar" style="width:30%"></div></div>
+            <div class="pp-text" id="kf-ptext">正在抽取关键帧…</div>
+          </div>
+
+          <div class="kf-result" id="kf-result" hidden>
+            <div class="kf-result-head">
+              <span id="kf-stat"></span>
+              <div class="kf-tools">
+                <button class="btn sm" id="kf-selall">全选</button>
+                <button class="btn sm" id="kf-selnone">全不选</button>
+              </div>
+            </div>
+            <div class="kf-grid" id="kf-grid"></div>
+          </div>
+        </main>
+
+        <div class="kf-dock" id="kf-dock" hidden>
+          <div>已选 <b id="kf-n">0</b> 帧</div>
+          <button class="dock-dir" id="kf-dir">📁 <span id="kf-dir-label">选择目录</span></button>
+          <button class="btn primary" id="kf-download" disabled>下载选中</button>
+        </div>
+      </section>
+
+      <!-- ============ 提示词自动化 ============ -->
+      <section class="panel" id="panel-prompt">
+        <header class="topbar">
+          <div class="title">提示词自动化</div>
+        </header>
+        <main class="panel-body">
+          <div class="module-intro">
+            <div class="mi-ico">✨</div>
+            <h2>提示词自动化 · 舞蹈换人换装</h2>
+            <p>专为「全能参考」类视频生成流程设计：上传一张<strong>人物A 参考图</strong>与一个<strong>人物B 舞蹈视频</strong>，自动生成一份提示词——把视频里的人物B替换成人物A，让A穿上B的服装，同时保持A的妆容、发型、身材一致，并克隆B的舞蹈动作。生成后复制，直接粘贴进你的 h3 工作流。</p>
+          </div>
+
+          <div class="module-card">
+            <div class="mc-head">① 参考素材</div>
+            <div class="mc-row">
+              <label class="mc-label">参考图片<br><span class="mc-sub">人物A · 身份主体</span></label>
+              <div class="mc-control">
+                <button class="btn ghost" id="pf-pick-img">选择图片…</button>
+                <span class="mc-note" id="pf-img">未选择</span>
+              </div>
+            </div>
+            <div class="mc-row">
+              <label class="mc-label">参考视频<br><span class="mc-sub">人物B · 舞蹈动作</span></label>
+              <div class="mc-control">
+                <button class="btn ghost" id="pf-pick-vid">选择视频…</button>
+                <span class="mc-note" id="pf-vid">未选择</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="module-card">
+            <div class="mc-head">② 生成参数</div>
+            <div class="mc-row mc-row-col">
+              <label class="mc-label">人物A 特征</label>
+              <div class="mc-control">
+                <textarea id="pf-a-desc" rows="3" placeholder="可补充；留空则按参考图为准">以参考图片为准：面部五官、脸型、肤色、年龄感、妆容风格、发型与发色、身材比例与体型均严格保持人物A，不得改動。</textarea>
+              </div>
+            </div>
+            <div class="mc-row mc-row-col">
+              <label class="mc-label">服装要求</label>
+              <div class="mc-control">
+                <textarea id="pf-cloth" rows="2" placeholder="款式/颜色/材质与参考视频中人物B的服装完全一致">让人物A换上参考视频中人物B所穿的服装，款式、颜色、图案、材质与B保持一致。</textarea>
+              </div>
+            </div>
+            <div class="mc-row mc-row-col">
+              <label class="mc-label">保留项</label>
+              <div class="mc-control pf-checks">
+                <label><input type="checkbox" class="pf-keep" value="妆容风格" checked> 妆容风格</label>
+                <label><input type="checkbox" class="pf-keep" value="发型" checked> 发型</label>
+                <label><input type="checkbox" class="pf-keep" value="身材比例" checked> 身材比例</label>
+                <label><input type="checkbox" class="pf-keep" value="服装迁移(来自B)" checked> 服装迁移（来自B）</label>
+                <label><input type="checkbox" class="pf-keep" value="舞蹈动作(克隆B)" checked> 舞蹈动作（克隆B）</label>
+                <label><input type="checkbox" class="pf-keep" value="光照/场景一致" checked> 光照/场景一致</label>
+              </div>
+            </div>
+            <div class="mc-row">
+              <label class="mc-label">输出要求</label>
+              <div class="mc-control">
+                <input type="text" id="pf-out" value="1080p，横屏，连贯舞蹈，时长与原视频一致" style="width:420px">
+              </div>
+            </div>
+            <div class="mc-row mc-row-col">
+              <label class="mc-label">附加指令</label>
+              <div class="mc-control">
+                <textarea id="pf-extra" rows="2" placeholder="可选：例如『避免穿帮、保持画面稳定、背景虚化』"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <div class="module-card">
+            <div class="mc-head">③ 生成提示词</div>
+            <div class="mc-actions">
+              <button class="btn primary" id="pf-gen">生成提示词</button>
+              <button class="btn ghost" id="pf-copy" disabled>复制</button>
+            </div>
+            <div class="mc-row mc-row-col">
+              <label class="mc-label">提示词</label>
+              <div class="mc-control">
+                <textarea id="pf-result" rows="14" readonly placeholder="点击「生成提示词」后在此显示，可直接复制粘贴进 h3 工作流"></textarea>
+              </div>
+            </div>
+          </div>
+        </main>
+      </section>
+
+      <!-- ============ 本地资源 ============ -->
+      <section class="panel" id="panel-local">
+        <header class="topbar">
+          <div class="title" id="local-title">本地资源 · 图片</div>
+          <div class="topbar-actions">
+            <button class="btn sm" id="local-pickdir">📁 切换目录</button>
+            <button class="btn sm danger" id="local-del-sel" disabled>🗑 删除选中</button>
+          </div>
+        </header>
+        <div class="local-dirbar">
+          <span class="ld-label">当前目录：</span>
+          <span class="ld-path" id="local-dir"></span>
+        </div>
+        <main class="panel-body" id="local-scroll">
+          <div id="local-groups"></div>
+        </main>
+        <div class="local-dock" id="local-dock" hidden>
+          <div class="local-dock-info">已选 <b id="local-n">0</b> 项</div>
+          <button class="btn sm" id="local-selall">全选</button>
+          <button class="btn sm" id="local-selnone">全不选</button>
+          <button class="btn primary" id="local-del">删除选中</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- 解析进度条 -->
+  <div class="parse-progress" id="parse-progress" hidden>
+    <div class="pp-bar-wrap"><div class="pp-bar" id="pp-bar"></div></div>
+    <div class="pp-text" id="pp-text">正在解析…</div>
+  </div>
+
+  <div class="dock" id="dock">
+    <div class="dock-info">已选 <b id="dock-n">0</b> 个 · <span id="dock-sub"></span></div>
+    <select id="dock-cat" class="dock-cat" title="保存分类（会记住上次选择）"></select>
+    <button class="dock-dir" id="btn-dir" title="点击更换保存目录">📁 <span id="dock-dir-label">选择目录</span></button>
+    <button class="btn primary" id="btn-download" disabled>下载到本地</button>
+  </div>
+
+  <!-- 进度弹窗 -->
+  <div class="mask" id="mask-progress">
+    <div class="modal">
+      <div class="modal-head"><span id="prog-title">正在下载</span><button class="x" data-close-prog>×</button></div>
+      <div class="prog-bar-wrap"><div class="prog-bar" id="prog-bar"></div></div>
+      <div class="prog-meta"><span id="prog-pct">0%</span><span id="prog-detail"></span></div>
+      <div class="prog-path" id="prog-path"></div>
+      <div class="prog-files" id="prog-files"></div>
+      <div class="modal-foot">
+        <button class="btn ghost" id="btn-cancel-dl">中止</button>
+        <button class="btn ghost" id="btn-reveal" hidden>在访达中打开</button>
+        <button class="btn primary" id="btn-prog-done" hidden>完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div class="mask" id="mask-settings">
+    <div class="modal">
+      <div class="modal-head"><span>设置</span><button class="x" data-close>×</button></div>
+      <p class="modal-note">抖音单条作品免登录即可用。但<strong>个人主页只能免登录拉到最近一批（约 11~20 个）</strong>，要抓取该用户<strong>全部作品</strong>（如 123 个）需在浏览器登录抖音网页版后，把 Cookie 粘贴到下方「抖音 Cookie」。小红书需在浏览器登录后，从 Cookie 中复制 <code>a1</code> 和 <code>web_session</code> 填入。</p>
+      <label>抖音 Cookie（填了可解锁主页全部作品）</label>
+      <input id="ck-dy" type="text" placeholder="登录抖音网页版后复制整个 Cookie；sid_tt / sessionid / passport_csrf_token 等">
+      <label>小红书 Cookie（用于小红书解析）</label>
+      <input id="ck-xhs" type="text" placeholder="a1=...; web_session=...">
+      <label>同时下载并发数</label>
+      <input id="cfg-conc" type="number" min="1" max="12" value="4">
+      <div class="modal-foot">
+        <button class="btn ghost" data-close>取消</button>
+        <button class="btn primary" id="btn-save-settings">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 灯箱预览 -->
+  <div class="lightbox" id="lightbox">
+    <button class="x" id="lb-close">×</button>
+    <div class="lb-content" id="lb-content"></div>
+  </div>
+
+  <!-- 本地资源灯箱（左右切换 + 删除） -->
+  <div class="lightbox" id="local-lightbox">
+    <button class="x" id="lolb-close">×</button>
+    <button class="lb-arrow prev" id="lolb-prev" title="上一张">‹</button>
+    <button class="lb-arrow next" id="lolb-next" title="下一张">›</button>
+    <button class="lb-del" id="lolb-del" title="删除该文件">🗑</button>
+    <div class="lb-content" id="lolb-content"></div>
+    <div class="lb-meta" id="lolb-meta"></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/keyframe.js"></script>
+  <script src="/static/prompt.js"></script>
+  <script src="/static/local.js"></script>
+</body>
+</html>

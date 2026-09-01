@@ -1,0 +1,10 @@
+{
+  "rhKey": "在此填写你的 RunningHub API Key",
+  "rhWorkflowId": "2090375516497997826",
+  "rhConcurrency": 1,
+  "rhTimeout": 60,
+  "model": "DeepSeek-V4-Flash",
+  "key": "",
+  "dlDir": "downloader",
+  "dlVenvPy": ""
+}

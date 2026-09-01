@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>提示词使用手册 · MiniMax H3</title>
+<style>
+  :root{
+    --bg:#f7f8fb;
+    --panel:#ffffff;
+    --ink:#1f2430;
+    --ink-soft:#56607a;
+    --line:#e7eaf1;
+    --accent:#6c5ce7;
+    --accent-soft:#efeaff;
+    --code-bg:#1e2230;
+    --code-ink:#e8ecf5;
+    --code-accent:#9b8cff;
+    --warn:#e67e22;
+    --warn-soft:#fff3e6;
+    --ok:#16a085;
+    --ok-soft:#e7f7f2;
+    --radius:14px;
+    --maxw:1200px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    line-height:1.75;
+    font-size:16px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{
+    max-width:var(--maxw);
+    margin:0 auto;
+    padding:0 24px;
+    display:grid;
+    grid-template-columns:220px minmax(0,1fr);
+    gap:32px;
+    align-items:start;
+  }
+  /* ---------- Sidebar TOC ---------- */
+  .toc{
+    position:sticky;
+    top:24px;
+    align-self:start;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:20px 18px;
+    max-height:calc(100vh - 48px);
+    overflow:auto;
+  }
+  .toc h4{
+    margin:0 0 12px;
+    font-size:12px;
+    letter-spacing:.12em;
+    text-transform:uppercase;
+    color:var(--ink-soft);
+  }
+  .toc a{
+    display:block;
+    color:var(--ink-soft);
+    text-decoration:none;
+    padding:6px 10px;
+    border-radius:8px;
+    font-size:14px;
+    border-left:2px solid transparent;
+    transition:.15s;
+  }
+  .toc a.sub{padding-left:24px;font-size:13px}
+  .toc a:hover{background:var(--accent-soft);color:var(--accent)}
+  .toc a.active{
+    background:var(--accent-soft);
+    color:var(--accent);
+    border-left-color:var(--accent);
+    font-weight:600;
+  }
+  /* ---------- Main ---------- */
+  .content{min-width:0;padding:32px 0 80px}
+  header.hero{
+    background:linear-gradient(135deg,#6c5ce7,#8e7bff);
+    color:#fff;
+    border-radius:18px;
+    padding:34px 34px;
+    margin-bottom:34px;
+    box-shadow:0 12px 30px rgba(108,92,231,.25);
+  }
+  header.hero .kicker{font-size:13px;opacity:.85;letter-spacing:.1em}
+  header.hero h1{margin:6px 0 10px;font-size:30px;line-height:1.25}
+  header.hero p{margin:0;opacity:.92;font-size:15px}
+  .formula{
+    background:var(--accent-soft);
+    border:1px solid #ddd2ff;
+    color:#4b3fb0;
+    border-radius:12px;
+    padding:16px 20px;
+    font-size:18px;
+    font-weight:600;
+    text-align:center;
+    margin:18px 0 8px;
+  }
+  section{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:26px 30px;
+    margin-bottom:24px;
+    scroll-margin-top:24px;
+  }
+  h2{
+    font-size:22px;
+    margin:0 0 16px;
+    padding-bottom:12px;
+    border-bottom:2px solid var(--line);
+    display:flex;
+    align-items:center;
+    gap:10px;
+  }
+  h2 .num{
+    background:var(--accent);
+    color:#fff;
+    font-size:14px;
+    width:26px;height:26px;
+    border-radius:8px;
+    display:inline-flex;
+    align-items:center;justify-content:center;
+    flex:none;
+  }
+  h3{
+    font-size:17px;
+    margin:24px 0 10px;
+    color:var(--accent);
+  }
+  h3:first-of-type{margin-top:6px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:6px 0}
+  strong{color:var(--ink)}
+  /* ---------- prompt / code block ---------- */
+  .prompt{
+    background:var(--code-bg);
+    color:var(--code-ink);
+    border-radius:10px;
+    padding:14px 18px;
+    margin:14px 0;
+    font-family:"SF Mono",ui-monospace,Menlo,Consolas,"Courier New",monospace;
+    font-size:13.5px;
+    line-height:1.7;
+    white-space:pre-wrap;
+    border-left:3px solid var(--code-accent);
+    overflow-x:auto;
+  }
+  .prompt .tag{
+    display:inline-block;
+    color:var(--code-accent);
+    font-weight:700;
+    margin-bottom:6px;
+    font-family:inherit;
+  }
+  /* ---------- callout (was blockquote) ---------- */
+  .note{
+    background:var(--warn-soft);
+    border-left:4px solid var(--warn);
+    border-radius:0 10px 10px 0;
+    padding:12px 18px;
+    margin:14px 0;
+    color:#7a4a14;
+    font-size:14.5px;
+  }
+  .note.blue{
+    background:var(--accent-soft);
+    border-left-color:var(--accent);
+    color:#4b3fb0;
+  }
+  .note.green{
+    background:var(--ok-soft);
+    border-left-color:var(--ok);
+    color:#0d6e58;
+  }
+  .note ul,.note ol{margin:6px 0}
+  /* inline @ref highlight */
+  .at{color:var(--accent);font-weight:600}
+  /* ---------- pitfalls ---------- */
+  .pit{
+    border:1px solid var(--line);
+    border-left:4px solid var(--warn);
+    border-radius:10px;
+    padding:14px 18px;
+    margin:12px 0;
+    background:#fffdf9;
+  }
+  .pit b{color:var(--warn)}
+  .footer{
+    text-align:center;
+    color:var(--ink-soft);
+    font-size:13px;
+    margin-top:10px;
+  }
+  @media (max-width:360px){
+    .wrap{grid-template-columns:1fr;gap:0}
+    .toc{position:static;max-height:none;margin-bottom:20px}
+    section{padding:20px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- ============ TOC ============ -->
+  <nav class="toc">
+    <h4>目录</h4>
+    <a href="#formula">1 · 整体公式</a>
+    <a href="#elements">2 · 四个要素如何描述</a>
+    <a href="#ref-material" class="sub">参考素材说明</a>
+    <a href="#core-creative" class="sub">核心创意</a>
+    <a href="#visual-process" class="sub">画面过程说明</a>
+    <a href="#shot">3 · 镜头怎么拆</a>
+    <a href="#modes">4 · 三类模式生视频</a>
+    <a href="#m-multimodal" class="sub">多模态素材融合</a>
+    <a href="#m-image" class="sub">图生视频</a>
+    <a href="#m-text" class="sub">纯文字生成视频</a>
+    <a href="#pitfalls">5 · 容易踩的坑</a>
+  </nav>
+
+  <!-- ============ CONTENT ============ -->
+  <main class="content">
+    <header class="hero">
+      <div class="kicker">MINIMAX H3 · VIDEO PROMPT</div>
+      <h1>提示词使用手册</h1>
+      <p>用一套清晰的结构，写出 H3 能准确理解、稳定执行的视频提示词。</p>
+    </header>
+
+    <!-- 1. 公式 -->
+    <section id="formula">
+      <h2><span class="num">1</span>整体公式</h2>
+      <div class="formula">完整提示词 = 参考素材说明 + 核心创意 + 画面过程说明</div>
+      <p>把提示词拆成这三段来写，既能保证信息完整，也方便 H3 逐段理解执行。</p>
+    </section>
+
+    <!-- 2. 四要素 -->
+    <section id="elements">
+      <h2><span class="num">2</span>四个要素如何描述</h2>
+
+      <h3 id="ref-material">参考素材说明</h3>
+      <p>告诉 H3 你上传的每个素材是干什么用的。</p>
+      <div class="note">
+        <ul>
+          <li><strong>写清素材编号：</strong>按你上传的顺序，比如 <span class="at">@图片1</span>，<span class="at">@音频2</span>，<span class="at">@视频3</span></li>
+          <li><strong>写清每个素材的用途：</strong>人物参考（锁定脸/形象）/ 物体参考（锁定物体）/ 场景参考（锁定场景）/ 关键帧（锁定帧，如果有首帧尾帧需求明确提出）/ 音色参考（锁定音色）/ 故事版（根据故事版分镜生成镜头内容）/ 风格参考（根据图片的风格，生成类似的风格内容）/ 构图参考（根据图片中物体构图，生成对应的构图）/ 音频复用（生成视频的音频直接复用参考音频素材）/ 音频部分复用（生成视频某个声音轨道/某个时间段部分复用参考音频素材）/ 动作参考（锁定动作）/ 运镜参考（锁定运镜）/ 视频编辑（对视频某个内容进行增删改），以及其他要求也可按需写明。</li>
+          <li><strong>没有上传素材时整段跳过</strong></li>
+        </ul>
+      </div>
+      <p><strong>参考提示词：</strong></p>
+      <div class="prompt"><span class="tag">提示词</span><span class="at">@图片1</span> 提供了 xx 角色的形象（如果有多个角色，需要能指代清楚），<span class="at">@视频2</span> 提供了动作参考。</div>
+      <div class="note blue">如果素材中有非常想要保持的特征，建议明确写出来，这样可以让一致性更好。</div>
+      <div class="note blue">在音频复刻 / 部分复刻中，如果对于人声对白内容 / 唱歌歌词内容的保持有较高的要求，强烈建议补充具体歌词文本内容。比如 <span class="at">@音频1</span> 作为目标视频的音频复刻素材，具体歌词是："ABCDEFGHIJKLMN"。</div>
+
+      <h3 id="core-creative">核心创意</h3>
+      <p>用一句话锁定全片信息，必须包含：</p>
+      <div class="note">
+        <ul>
+          <li><strong>主体：</strong>谁 / 什么（人 / 物 / 动物 / 其他）</li>
+          <li><strong>地点：</strong>在哪里</li>
+          <li><strong>事件：</strong>在做什么</li>
+          <li><strong>题材 / 风格：</strong>什么调性（写实 / 动画 / 电影感 / 广告片 / 纪录片……）
+            <ul>
+              <li>特殊风格列举：赛博朋克 / 霓虹灯美学 / 涂鸦风 等</li>
+            </ul>
+          </li>
+          <li><strong>特殊运镜：</strong>要不要特殊镜头（航拍 / 一镜到底 / 慢动作……）
+            <ul>
+              <li>默认会切镜</li>
+              <li>运镜风格写清即可；注意环绕运镜，建议用 <code>truck left + pan right</code> 或者 <code>truck right + pan left</code>，而非直接说环绕运镜</li>
+            </ul>
+          </li>
+          <li><strong>切镜风格：</strong>
+            <ul>
+              <li>普通切镜（cut）</li>
+              <li>叠化切镜（fade）</li>
+              <li>随着节奏卡点切镜</li>
+              <li>快切</li>
+            </ul>
+          </li>
+          <li>如果任何元素有直接和引用素材的关联，都欢迎用户用 <span class="at">@图片1</span> / <span class="at">@音频1</span> / <span class="at">@视频1</span> 等等方式强调下。</li>
+        </ul>
+      </div>
+      <p><strong>参考提示词：</strong></p>
+      <div class="prompt"><span class="tag">提示词</span>一位穿汉服的年轻女子（<span class="at">@图片1</span>）在樱花纷飞的庭院里舞剑，古典国风，电影质感，一镜到底。</div>
+
+      <h3 id="visual-process">画面过程说明</h3>
+      <p>按时间轴或故事线分段写，每个分镜 / 时间段包含两部分：</p>
+      <div class="note">
+        <p><strong>想要（画面里要出现什么）：</strong>画面景别 + 内容 + 运镜 + 动作 + 台词 + 音效</p>
+        <ul>
+          <li>以切镜 shot 作为时间戳的分段。每个 shot 内部写好景别，具体内容，shot 内部运镜，人物台词，音效等这个 shot 内的内容
+            <ul>
+              <li>注意台词的长短尽量和镜头长短对齐（这个得强调下，很多口型问题会来自于这个）</li>
+              <li>如果一句台词跨 shot，可以用"接着上个 shot 继续说"这样的描述表明是跨 shot 的台词对白</li>
+            </ul>
+          </li>
+          <li>如果任何元素有直接和引用素材的关联，可用 <span class="at">@图片1</span>，<span class="at">@音频1</span> 等等方式强调下。</li>
+          <li>如果你希望视频中出现具体文字、Logo、标题、标语、按钮文案等，一定要把文字原文写出来。
+            <ul>
+              <li>例如：画面中出现英文："H3"。</li>
+              <li>或者：手机屏幕上显示标题："AI Video Creation"，按钮文字为："Start Now"。</li>
+            </ul>
+          </li>
+        </ul>
+        <p><strong>不想要（视频里不要出现什么）</strong></p>
+        <ul>
+          <li>不想要背景音乐时，需明确写明，比如不希望视频里出现背景音乐，建议在提示词最后明确写：
+            <div class="prompt" style="margin:8px 0"><span class="tag">提示词</span>非叙事性音乐：N/A
+不要额外添加背景音乐。</div>
+            或者使用英文格式：
+            <div class="prompt" style="margin:8px 0"><span class="tag">提示词</span>"non_diegetic_music": N/A</div>
+          </li>
+        </ul>
+        <ul>
+          <li>尽量少写比喻句，多写看得见的画面。写 H3 提示词时，建议尽量使用具体、直接、可视化的描述，少写需要"意会"的句子。因为 H3 更擅长理解明确的画面指令，而不是抽象比喻。</li>
+          <li>如有台词，必须明确具体内容，比如 <em>一位穿汉服的年轻女子说："你来了，剑等你好久了。"</em></li>
+        </ul>
+      </div>
+      <p><strong>示例：</strong></p>
+      <div class="prompt"><span class="tag">提示词</span>0-3 秒：全景，女子（<span class="at">@图片1</span>）从画面左侧缓步走入樱花庭院（<span class="at">@图片2</span>），背景虚化，没有对白，只有脚步声。
+3-8 秒：切镜到女子（<span class="at">@图片1</span>）的中景，她拔出长剑（<span class="at">@图片3</span>），缓缓起势，樱花瓣从树上飘落。镜头推进。
+8-12 秒：切镜到特写，剑光一闪，慢动作，樱花被剑气激得四散。
+非叙事性音乐：N/A</div>
+    </section>
+
+    <!-- 3. 镜头怎么拆 -->
+    <section id="shot">
+      <h2><span class="num">3</span>镜头怎么拆</h2>
+      <p>H3 有基础的分镜能力，以及 H3 对于切镜点遵从较强，如果你想要更好的生成，以下有一些建议：</p>
+      <div class="note">
+        <ul>
+          <li><strong>台词：</strong>台词的长短和画面变化内容需要合乎每个 shot 的长短逻辑，尽量不要出现一个 3s shot 说很大一段话的情况，会非常影响效果
+            <ul>
+              <li>H3 能够响应跨 shot（J-cut，L-cut）的台词响应，只要明确写出一句台词跨了哪些 shot 就可以响应！</li>
+              <li>对于一个 shot 而言如果是画面内说话人角色，需写清楚是哪个角色说的，如果是画面外说话人，写清楚是画外说话人。如果发生了画内外因为切镜造成的转化的情况可以明确写出来，比如：</li>
+            </ul>
+          </li>
+          <li><strong>切镜一致性保持：</strong>切镜的时候可明确写出切镜到什么景别，具体主体是之前的哪个角色，有助于跨镜头一致性的保持</li>
+        </ul>
+      </div>
+      <div class="note green">一个比较复杂的例子：一个画外音响起说：Wake up Wake up。之后切镜到一个中年妇女的近景，她是画外音的主人，她继续说道：It's time to go to school !</div>
+    </section>
+
+    <!-- 4. 三类模式 -->
+    <section id="modes">
+      <h2><span class="num">4</span>三类模式生视频，提示词分别怎么写</h2>
+
+      <h3 id="m-multimodal">上传多模态素材融合（多模态参考）</h3>
+      <p>你可以同时上传：人物图 + 动作视频 + 场景图 + 音乐。每个素材都要写清它的角色：</p>
+      <div class="note">
+        <ul>
+          <li><span class="at">@图片1</span> → 人物参考（锁脸）</li>
+          <li><span class="at">@视频1</span> → 动作参考（锁动作）</li>
+          <li><span class="at">@音频1</span> → 节奏 / 情绪参考</li>
+        </ul>
+      </div>
+      <p><strong>示例：</strong></p>
+      <div class="prompt"><span class="tag">提示词</span><span class="at">@图片1</span> 是人物参考（锁这位女子的脸），<span class="at">@视频1</span> 是动作参考（用里面的舞剑动作），<span class="at">@音频1</span> 是情绪参考（古风配乐）。让这位女子在樱花庭院里按视频里的动作舞剑。</div>
+
+      <h3 id="m-image">上传图片生成视频（图生视频）</h3>
+      <div class="note">
+        <ul>
+          <li>只上传 1 张图：说清楚是首帧（视频开头画面）还是尾帧（视频结尾画面）</li>
+          <li>上传 2 张图（首 + 尾帧）：H3 不会自动加切镜，只补两帧之间的动作、光影、声音</li>
+        </ul>
+      </div>
+      <p><strong>示例：</strong></p>
+      <div class="prompt"><span class="tag">提示词</span><span class="at">@图片1</span> 是首帧参考图：女子持剑站在樱花树下。让她从持剑起势到舞剑完毕，自然衔接，不要切镜。</div>
+
+      <h3 id="m-text">纯文字生成视频</h3>
+      <p>不依赖任何参考素材，直接根据你的文字提示词建立主体、场景、动作。这种模式：</p>
+      <div class="note">
+        <ul>
+          <li>文字描述要更具体（主体外观、场景细节、动作描述都要写清）</li>
+          <li>多用「大全景交代空间 + 中景承载动作 + 特写强调细节」的分层写法</li>
+        </ul>
+      </div>
+      <p><strong>示例：</strong></p>
+      <div class="prompt"><span class="tag">提示词</span>写实自然纪录片风格，电影级真实光影。清晨的薄雾中，在广阔的湿地芦苇荡里，一只优雅的白鹤单腿站立在浅水中，缓慢转头看向镜头。柔和的逆光，雾气在光束里飘动。</div>
+    </section>
+
+    <!-- 5. 踩坑 -->
+    <section id="pitfalls">
+      <h2><span class="num">5</span>容易踩的坑</h2>
+      <div class="note">只写一段话没分段，按 3 段公式拆开写。</div>
+      <div class="pit"><b>1. 素材上传了但没说用途</b> → 补一句「<span class="at">@图片1</span> 是 XX 参考」</div>
+      <div class="pit"><b>2. 用音乐但说「不要 BGM」</b> → 这两个矛盾，要么删一个，要么分场景写</div>
+      <div class="pit"><b>3. 想一镜到底但写了很多分镜</b> → 全文保持一段情节描述，删掉【镜头 N】结构</div>
+      <div class="pit"><b>4. 想要主角脸一致但没传图</b> → 一定要上传人物参考图，并标注「人物参考」</div>
+      <div class="pit"><b>5. 提示词太短（H3 没素材可参考时）</b> → 至少写出主体外观 + 场景细节 + 动作 + 风格</div>
+    </section>
+
+    <div class="footer">整理自 MiniMax H3 提示词使用手册 · 静态 HTML 版</div>
+  </main>
+</div>
+
+<script>
+  // scrollspy: highlight active TOC item
+  const links = Array.from(document.querySelectorAll('.toc a'));
+  const map = new Map(links.map(a => [a.getAttribute('href').slice(1), a]));
+  const sections = links.map(a => document.getElementById(a.getAttribute('href').slice(1))).filter(Boolean);
+  const obs = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const a = map.get(e.target.id);
+        if (a) a.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-10% 0px -75% 0px', threshold: 0 });
+  sections.forEach(s => obs.observe(s));
+</script>
+</body>
+</html>

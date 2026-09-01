@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>图片过滤</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    body { background: var(--bg); }
+    .filter-page { max-width: 1200px; margin: 0 auto; padding: 20px 18px 40px; }
+    .filter-page .topbar { padding: 0 0 16px; max-width: none; margin: 0; }
+    .filter-cond {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+      padding: 16px 18px; box-shadow: var(--shadow);
+    }
+    .filter-cond .dir-row { margin-bottom: 14px; }
+    .filter-cond .dir-row .btn { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+    .filter-cond .dir-row .btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .filter-actions { display: flex; gap: 10px; margin-top: 14px; }
+    .filter-progress { margin: 16px 0 0; padding: 12px 14px; background: #f5f7fa; border-radius: 10px; }
+    .filter-progress .pp-text { font-size: 12.5px; color: var(--text-2); margin-top: 8px; }
+    .filter-results { margin-top: 16px; columns: 6 170px; column-gap: 10px; max-height: none; overflow: visible; }
+    .result-count { font-size: 13px; color: var(--text-2); margin-top: 16px; }
+    .result-count b { color: var(--brand); }
+  </style>
+</head>
+<body>
+  <div class="filter-page">
+    <header class="topbar">
+      <div class="title">图片过滤</div>
+    </header>
+
+    <section class="filter-cond">
+      <div class="dir-row">
+        <button class="btn ghost" id="btn-filter-dir">📁 <span id="filter-dir-label">选择目录</span></button>
+      </div>
+      <div class="filter-grid">
+        <div class="fld"><label>宽度 ≥</label><input id="f-min-w" type="number" min="0" placeholder="不限"><span>px</span></div>
+        <div class="fld"><label>高度 ≥</label><input id="f-min-h" type="number" min="0" placeholder="不限"><span>px</span></div>
+        <div class="fld"><label>大小 ≥</label><input id="f-min-size" type="number" min="0" placeholder="不限"><span>KB</span></div>
+      </div>
+      <div class="filter-actions">
+        <button class="btn primary" id="btn-filter-search">搜索</button>
+      </div>
+      <div class="hint" style="margin-top:10px">扫描所选目录（含子目录）下所有图片，筛出宽度、高度、文件大小均 ≥ 设定值的图片。</div>
+    </section>
+
+    <div class="filter-progress" id="filter-progress" hidden>
+      <div class="pp-bar-wrap"><div class="pp-bar indeterminate" id="filter-prog-bar"></div></div>
+      <div class="pp-text" id="filter-prog-text">正在扫描…</div>
+    </div>
+
+    <div class="result-count" id="result-count" hidden>共 <b id="result-n">0</b> 张满足条件</div>
+    <div class="filter-results masonry" id="filter-results"></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/static/filter.js"></script>
+</body>
+</html>
