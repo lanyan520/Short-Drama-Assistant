@@ -1,16 +1,22 @@
 # 短剧助手 (Short Drama Assistant)
 
-本地运行的 Web 应用，面向**短剧 / AI 视频创作**工作流。纯前端 + 标准库后端，无第三方 Web 框架依赖；集成 RunningHub 工作流做 AI 视频生成，并内置抖音 / 小红书无水印下载器。
+免费开源软件，本地运行的 Web 应用，面向**短剧 / AI 视频创作**工作流；集成 RunningHub 工作流做 AI 图片/视频/音频生成
+
+内置抖音单个作品/主页列表/收藏夹无水印下载器。
 
 ## 界面预览
 
 > 以下截图用于快速了解界面与功能（缩放以看清文字为准，在线可继续调整）。
 
 **去水印下载**
-
+网页登录抖音后点击 右上角 同步抖音cookiea按钮后就可以正常解析下载无水印视频
 <img src="images/去水印.png" width="900" alt="去水印下载界面">
 
 **设置**
+图片/视频/音频都是调用Runninghub的定制工作流，需要注册账号登陆后填进去
+对于新用户注册送500币
+注册地址：https://www.runninghub.cn?inviteCode=3493ffd7
+注意关注用户权益修改并发数量
 
 <img src="images/设置.png" width="900" alt="设置界面">
 
@@ -19,7 +25,9 @@
 <img src="images/h3_1.png" width="900" alt="H3 生视频界面 1">
 
 **MiniMax H3 生视频（2）**
-
+上传的图片支持点击按标签的形式输入到提示框
+对于写好的提示词推荐使用workbuddy 安装prompt-writing skill 优化提示词，免费！！
+工作流内有付费节点我都给踢出掉了，运行只扣runninghub 的 币
 <img src="images/h3_2.png" width="900" alt="H3 生视频界面 2">
 
 ## 功能特性
