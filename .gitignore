@@ -18,7 +18,8 @@ __pycache__/
 
 # ===== 误存的截图等杂物 =====
 --viewport
-images/
+
+# macOS 自动生成（images/ 下的界面截图需入库，仅忽略 .DS_Store）
 .DS_Store
 
 # ===== 内部工作记录（可选排除）=====

@@ -2,6 +2,26 @@
 
 本地运行的 Web 应用，面向**短剧 / AI 视频创作**工作流。纯前端 + 标准库后端，无第三方 Web 框架依赖；集成 RunningHub 工作流做 AI 视频生成，并内置抖音 / 小红书无水印下载器。
 
+## 界面预览
+
+> 以下截图用于快速了解界面与功能（缩放以看清文字为准，在线可继续调整）。
+
+**去水印下载**
+
+<img src="images/去水印.png" width="900" alt="去水印下载界面">
+
+**设置**
+
+<img src="images/设置.png" width="900" alt="设置界面">
+
+**MiniMax H3 生视频（1）**
+
+<img src="images/h3_1.png" width="900" alt="H3 生视频界面 1">
+
+**MiniMax H3 生视频（2）**
+
+<img src="images/h3_2.png" width="900" alt="H3 生视频界面 2">
+
 ## 功能特性
 
 - **AI 视频生成**（RunningHub 工作流）：文生视频、图生视频、首帧 / 尾帧 / 首尾帧生视频、全能参考双模双采（MiniMax H3 资源面板）等。
