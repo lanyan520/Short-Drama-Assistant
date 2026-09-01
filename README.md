@@ -17,7 +17,7 @@
 
 图片/视频/音频都是调用Runninghub的定制工作流，需要注册账号登陆后填进去
 
-对于老用户直接https://www.runninghub.cn/call-api获取密钥填入设置里面
+对于老用户直接 https://www.runninghub.cn/call-api 获取密钥填入设置里面
 
 对于新用户点击下面注册送500币
 
@@ -55,7 +55,7 @@
 
 可以看到当前执行的任务，也可以取消任务,取消不扣币
 
-程序第一版暂时就这么多功能，后续开发迭代会考虑ComfyUI版本的本地化的无线画布和Flux3 Krea3相关图片视频生成功能，具体等有机会在开发..
+后续开发迭代会考虑ComfyUI版本的本地化的无线画布和Flux3 Krea3相关图片视频生成功能，具体等有机会在开发..
 
 ```
 
@@ -73,6 +73,8 @@ pip install -r downloader/requirements.txt
 port=8777 python3 server.py
 
 # 3.浏览器打开 http://127.0.0.1:8777
+
+```
 
 ## 许可证
 
