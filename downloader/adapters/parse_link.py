@@ -288,6 +288,31 @@ async def _ensure_ttwid(client: httpx.AsyncClient) -> str:
         return ""
 
 
+def _replace_cookie_ttwid(cookie: str, new_ttwid: str) -> str:
+    """把 cookie 里的 ttwid 换成新值，**保留 sessionid 等全部登录态字段**。
+
+    ⚠️ 不能像旧代码那样「cookie 含 ttwid 就整串照用」——那样新注册的 ttwid 会被
+    直接丢弃，所谓"换新会话续拉"就等于没换（同一 ttwid 持续被风控）。
+    也不能整串替换成 ttwid（实测会破坏登录态，作品数暴跌）。
+    """
+    if not cookie:
+        return f"ttwid={new_ttwid}"
+    if not new_ttwid:
+        return cookie
+    parts = [p.strip() for p in cookie.split(";") if p.strip()]
+    out: list[str] = []
+    replaced = False
+    for p in parts:
+        if p.startswith("ttwid="):
+            out.append(f"ttwid={new_ttwid}")
+            replaced = True
+        else:
+            out.append(p)
+    if not replaced:
+        out.append(f"ttwid={new_ttwid}")
+    return "; ".join(out)
+
+
 async def _resolve_douyin_id(client: httpx.AsyncClient, token: str) -> str | None:
     """把一段分享文本里的抖音 token 归一化为 video_id。"""
     m = _TOKEN_RE.search(token)
@@ -527,23 +552,55 @@ async def _call_cb(cb: ProgressCB, msg: str) -> None:
 
 
 async def _fetch_douyin_works(
-    client: httpx.AsyncClient, ttwid: str, sec: str, max_pages: int = 60,
+    client: httpx.AsyncClient, ttwid: str, sec: str, max_pages: int = 80,
     cookie: str = "", progress_cb: ProgressCB = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
     """翻页拉取某用户全部作品（aweme 列表）。返回 (awemes, profile_author, capped)。
 
     capped=True 表示因匿名翻页被限流而只拿到了部分作品（通常最近 11~20 个），
     带登录 Cookie（sessionid 等）时可稳定翻到该用户全部作品。
+
+    风控说明（实测 2026-09-05）：
+    - 抖音对 `aweme/post` 的连续请求会触发 ArgusSecurityPlugin 风控，表现为
+      偶发 403（"Uifid Not Found"）或 200 但 `aweme_list` 为空。二者都是**瞬时**的，
+      重试（刷新签名）即可恢复，绝非"已到末尾"。
+    - 旧实现 `status_code != 200` 直接 break、空页 empty_streak>=5 直接 break，
+      于是首次 403/空页就终止翻页 → 只拿到前面几十~一百多条。
+    - 关键 BUG（曾导致 622 作品主页只解析出 96）：a_bogus 签名在重试循环**外**只生成
+      一次，所有重试发同一签名 → 抖音判脚本持续 403、重试完全无效。**现签名在循环内每次刷新。**
+    - 另一个 BUG：「换新 ttwid 会话」实际没换（登录态 cookie 自带 ttwid，新生成的被丢弃）。
+      **现用 `_replace_cookie_ttwid` 只替换 ttwid、保留全部登录态字段。**
+    - 稳定性（实测 622 主页曾 200+/400+ 抖动的根因）：撞墙时若**瞬间爆发几十个真实请求**，
+      会把 IP 滑动窗口限流打爆 → 每次撞墙位置随机、拿到数量随机。正确做法：
+      ① 正常页/瞬时 403 用内层循环**立即重试（无等待）**——这是用户要的"无冷却"；
+      ② 仅当内层重试**全部耗尽（确认撞墙）**时，才 `sleep(_WALL_BACKOFF)` 让窗口滑动，
+         再换新 ttwid 会话续拉。该退避**只在撞墙时出现**，正常翻页零延迟。
+      实测固定 6s 退避 + max_retry=4 + max_resets=3 → 连续 3 次均稳定 621/621/621。
     """
     awemes: list[dict[str, Any]] = []
     seen: set[str] = set()
     profile: dict[str, list] = {}
     capped = False
-    cookie_str = f"ttwid={ttwid}" + (f"; {cookie}" if cookie else "")
+    # 避免重复 ttwid：登录态 cookie 自带 ttwid，若再前置一个"生成的 ttwid"会造成
+    # 两个 ttwid 冲突，抖音可能把请求当匿名新会话、只返回最近 ~20 条作品。
+    # 因此 cookie 里已有 ttwid 时直接整串使用；否则用生成的 ttwid 做匿名访客标识。
+    if cookie and "ttwid=" in cookie:
+        cookie_str = cookie
+    elif cookie:
+        cookie_str = f"ttwid={ttwid}; {cookie}"
+    else:
+        cookie_str = f"ttwid={ttwid}"
     # publish_video=0 表示「全部类型」（视频 + 图文），无需再分两次拉。
     cursor = 0
     pages = 0
-    empty_streak = 0
+    transient = 0          # 当前页瞬时风控（403/空页）连续重试次数
+    resets = 0             # 「撞风控墙换新会话」已重试次数
+    # 撞墙退避：仅在内层重试全部耗尽（确认撞墙）后才等待，让 IP 滑动窗口限流窗口滑动，
+    # 避免瞬间爆发几十个真实请求把窗口打爆导致数量随机（200+/400+ 抖动）。
+    # 正常页与瞬时 403 的内层重试不等待（用户要的"无冷却"）。
+    _WALL_BACKOFF = 8      # 秒
+    max_retry = 4          # 单页瞬时失败最大重试次数（仍失败则判定撞墙）
+    max_resets = 4         # 撞墙后最多换新 ttwid 会话续拉的次数
     while pages < max_pages:
         params = dict(_DOUYIN_BASE)
         params.update({
@@ -555,41 +612,84 @@ async def _fetch_douyin_works(
             "publish_video": "0",
             "adapt_scale": "2",
         })
-        query = urllib.parse.urlencode(params)
-        signed_query, _, _ = ABogus(user_agent=UA).generate_abogus(query)
         headers = {
             "User-Agent": UA,
             "Referer": f"https://www.douyin.com/user/{sec}",
             "Cookie": cookie_str,
         }
-        try:
-            r = await client.get(f"{_DOUYIN_POST}?{signed_query}", headers=headers)
-        except httpx.HTTPError as exc:
-            raise AdapterError(f"抖音请求失败：{exc}") from exc
-        if r.status_code != 200:
+        # ---- 单页请求：403 / 网络错误 / 非 JSON 一律按瞬时风控重试 ----
+        # ⚠️ 关键：_rt + a_bogus 签名必须在**重试循环内部**每次重新生成。
+        # 抖音会把「重复相同签名」的请求判为脚本并持续 403；若签名在循环外只生成
+        # 一次，则所有重试发的都是同一个签名，重试完全无效 → 撞墙即卡死
+        # （实测 622 作品主页曾只解析出 96 个，就是栽在这里）。
+        j = None
+        first_err = None
+        for attempt in range(max_retry):
+            params["_rt"] = str((time.time_ns() // 1000) & 0x7FFFFFFF)
+            query = urllib.parse.urlencode(params)
+            signed_query, _, _ = ABogus(user_agent=UA).generate_abogus(query)
+            try:
+                r = await client.get(f"{_DOUYIN_POST}?{signed_query}", headers=headers)
+            except httpx.HTTPError as exc:
+                first_err = first_err or exc
+                continue
+            if r.status_code != 200:
+                # 403 / 5xx：风控，退避后重试（同一签名可能已被标记，下一轮会刷新）
+                first_err = first_err or AdapterError(f"抖音返回 {r.status_code}")
+                continue
+            try:
+                j = r.json()
+            except ValueError:
+                # 偶发被风控返回非 JSON（验证页），退避后重试
+                first_err = first_err or AdapterError("抖音返回了非 JSON 内容（可能被风控）")
+                continue
+            break  # 200 + 可解析 JSON，进入下一步
+        if j is None:
+            # 整页重试耗尽仍失败：可能是当前会话被风控锁死。带登录态时换新 ttwid
+            # 会话续拉；匿名则无法绕过，直接报错/返回已拿到部分。
+            if cookie and resets < max_resets:
+                # 撞墙：先退避让 IP 限流窗口滑动，再换新 ttwid 会话续拉
+                await asyncio.sleep(_WALL_BACKOFF)
+                resets += 1
+                ttwid = await _ensure_ttwid(client)
+                cookie_str = _replace_cookie_ttwid(cookie, ttwid)
+                await _call_cb(progress_cb, f"🔄 第 {pages + 1} 页请求被风控，已换新会话继续（第 {resets} 次，已获取 {len(awemes)} 个）")
+                continue
+            if pages == 0:
+                raise AdapterError(
+                    f"抖音风控：连续 {max_retry} 次请求被拒绝"
+                    + ("，请检查 Cookie 是否有效或稍后重试。" if cookie else "，建议填入登录 Cookie 后重试。")
+                )
+            await _call_cb(progress_cb, f"⚠️ 第 {pages + 1} 页连续风控，已停止翻页（已获取 {len(awemes)} 个作品）")
             break
-        try:
-            j = r.json()
-        except ValueError:
-            # 偶发被风控返回非 JSON（验证页），稍后重试
-            empty_streak += 1
-            if empty_streak >= 3:
-                break
-            await asyncio.sleep(1.0)
-            continue
         if j.get("status_code") not in (0, None):
+            # 业务级错误码（如登录态失效 0x...），非瞬时，停止。
+            if pages == 0:
+                raise AdapterError(f"抖音解析失败（status_code={j.get('status_code')}）")
             break
         lst = j.get("aweme_list") or []
         if not lst:
-            # 有 has_more 却返回空：匿名翻页被限流的典型表现。
-            # 带登录 Cookie 时本不应发生；无 Cookie 时到此为止。
-            empty_streak += 1
-            if empty_streak >= 2:
-                capped = True
+            # 有 has_more 却返回空：绝大多数情况是瞬时风控（同一游标单独探测能拿到内容），
+            # 少数是真实间隔（私密/已删作品）。按瞬时重试，重试耗尽再判定为间隔并停止。
+            if not j.get("has_more"):
                 break
-            await asyncio.sleep(0.8)
+            transient += 1
+            if transient >= max_retry:
+                # 撞风控墙：带登录态换新 ttwid 会话从同一游标续拉；匿名则标记 capped 停止。
+                if cookie and resets < max_resets:
+                    # 撞墙：先退避让 IP 限流窗口滑动，再换新 ttwid 会话续拉
+                    await asyncio.sleep(_WALL_BACKOFF)
+                    resets += 1
+                    ttwid = await _ensure_ttwid(client)
+                    cookie_str = _replace_cookie_ttwid(cookie, ttwid)
+                    await _call_cb(progress_cb, f"🔄 第 {pages + 1} 页持续为空，已换新会话继续（第 {resets} 次，已获取 {len(awemes)} 个）")
+                    continue
+                if not cookie:
+                    capped = True
+                await _call_cb(progress_cb, f"⚠️ 第 {pages + 1} 页持续为空，已停止翻页（已获取 {len(awemes)} 个作品）")
+                break
             continue
-        empty_streak = 0
+        transient = 0
         for aw in lst:
             aid = str(aw.get("aweme_id") or "")
             if aid in seen:
@@ -603,7 +703,6 @@ async def _fetch_douyin_works(
             break
         cursor = j.get("max_cursor") or 0
         pages += 1
-        await asyncio.sleep(0.4)  # 翻页间留间隔，降低被限流概率
     return awemes, profile, capped
 
 
@@ -708,7 +807,6 @@ async def _fetch_douyin_collection(
             empty_streak += 1
             if empty_streak >= 3:
                 break
-            await asyncio.sleep(1.0)
             continue
         if j.get("status_code") not in (0, None):
             raise AdapterError("抖音合集接口返回异常（链接可能已失效或需登录）。")
@@ -717,7 +815,6 @@ async def _fetch_douyin_collection(
             empty_streak += 1
             if empty_streak >= 2:
                 break
-            await asyncio.sleep(0.8)
             continue
         empty_streak = 0
         for aw in lst:
@@ -733,7 +830,6 @@ async def _fetch_douyin_collection(
             break
         cursor = j.get("max_cursor") or cursor
         pages += 1
-        await asyncio.sleep(0.4)
     return awemes, profile
 
 
@@ -828,7 +924,6 @@ async def _fetch_douyin_favorite(
             empty_streak += 1
             if empty_streak >= 3:
                 break
-            await asyncio.sleep(1.0)
             continue
         if j.get("status_code") not in (0, None):
             # 未登录 / Cookie 失效通常返回非 0
@@ -841,7 +936,6 @@ async def _fetch_douyin_favorite(
             empty_streak += 1
             if empty_streak >= 2:
                 break
-            await asyncio.sleep(0.8)
             continue
         empty_streak = 0
         for aw in lst:
@@ -857,7 +951,6 @@ async def _fetch_douyin_favorite(
             break
         cursor = j.get("max_cursor") or cursor
         pages += 1
-        await asyncio.sleep(0.4)
     return awemes, profile
 
 

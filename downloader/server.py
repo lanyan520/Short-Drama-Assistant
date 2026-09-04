@@ -95,8 +95,12 @@ async def parse_link(request: Request) -> StreamingResponse:
         )
 
     # 抖音匿名即可，但翻全作品列表需要登录 Cookie；小红书（含 auto 里的小红书部分）需要 Cookie
-    xhs_cookie = config.cookie_for("xhs") if platform != "douyin" else ""
-    douyin_cookie = config.cookie_for("douyin") if platform != "xhs" else ""
+    # 优先使用请求体显式传入的 cookie（前端随解析请求下发当前设置里的 cookie），
+    # 若未传则回退到本机 config.json 中已保存的 cookie。
+    body_dy = (body.get("douyin_cookie") or "").strip()
+    body_xhs = (body.get("xhs_cookie") or "").strip()
+    xhs_cookie = body_xhs or (config.cookie_for("xhs") if platform != "douyin" else "")
+    douyin_cookie = body_dy or (config.cookie_for("douyin") if platform != "xhs" else "")
 
     progress_q: asyncio.Queue = asyncio.Queue()
 

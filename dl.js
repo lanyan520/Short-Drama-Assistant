@@ -150,12 +150,15 @@
     dlRenderSkeleton();
     dlProgressShow("正在解析…");
 
+    const dyC = (document.getElementById("settingsDyCookie")?.value || "").trim();
+    const xhsC = (document.getElementById("settingsXhsCookie")?.value || "").trim();
+
     let resp;
     try {
       resp = await fetch("/api/dl/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ platform: "auto", media_type: "auto", text }),
+        body: JSON.stringify({ platform: "auto", media_type: "auto", text, douyin_cookie: dyC, xhs_cookie: xhsC }),
       });
     } catch (e) {
       DL.loading = false; dlClearSkeleton(); dlProgressHide();
