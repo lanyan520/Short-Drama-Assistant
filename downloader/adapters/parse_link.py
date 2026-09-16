@@ -1,10 +1,12 @@
 """链接解析模式：用户粘贴抖音/小红书分享链接，解析出真实直链。
 
-关键实测结论（2026-08-13）：
-- 抖音 aweme/detail 单视频/图集详情接口**匿名可用**（无需 Cookie），
-  仅依赖匿名 ttwid + 真实 a_bogus 签名即可拿到无水印直链。
-- 抖音「个人主页作品列表」`aweme/post` **同样匿名可用**（不像搜索那样强制登录 2483），
-  因此粘贴 douyin.com/user/xxxx 可拉取该用户全部作品（已实测 status_code:0、可翻页）。
+抖音风控现状（2026-09-14 起，实测）：
+- 抖音对 aweme/detail（单视频/图文）、aweme/post（主页作品）、mix/*、music/* 等
+  **非浏览器直连**请求一律返回 403（"Uifid Not Found" / "Signature Not Found"），
+  带不带 Cookie、怎么重试都一样。纯 API 直连已不可用。
+- 放行所需的 x-secsdk-web-signature 只能由抖音网页内 JS SDK 生成。兜底方案：
+  用真实 Chrome（CDP）以已登录 profile 打开页面，让页面自己签名并发请求，
+  在 CDP 层拦截响应聚合 —— 见 `browser_fetch.py`。API 路径失败时自动降级到浏览器兜底。
 - 小红书笔记接口**强制登录**，必须带 web_session + a1 Cookie，否则 -101。
   因此小红书链接解析（含个人主页 user_posted）在未填 Cookie 时返回 need_cookie 提示。
 """
@@ -30,6 +32,18 @@ try:
     _ABOGUS_OK = True
 except Exception:
     _ABOGUS_OK = False
+
+# 浏览器兜底（CDP 驱动真实 Chrome 绕过 Argus 门禁）。导入失败不影响原生 API 路径。
+try:
+    from .browser_fetch import (
+        browser_fetch_profile_works,
+        browser_fetch_aweme_detail,
+        BROWSER_AVAILABLE,
+    )
+except Exception:
+    browser_fetch_profile_works = None
+    browser_fetch_aweme_detail = None
+    BROWSER_AVAILABLE = False
 
 
 # ----------------------------------------------------------------- 抖音
@@ -451,19 +465,24 @@ async def resolve_douyin(
         try:
             r = await client.get(f"{_DOUYIN_DETAIL}?{signed_query}", headers=headers)
         except httpx.HTTPError as exc:
-            raise AdapterError(f"抖音请求失败：{exc}") from exc
-        if r.status_code != 200:
-            skipped += 1
-            continue
-        try:
-            j = r.json()
-        except ValueError:
-            skipped += 1
-            continue
-        if j.get("status_code") not in (0, None):
-            skipped += 1
-            continue
-        aweme = j.get("aweme_detail") or {}
+            if not (BROWSER_AVAILABLE and browser_fetch_aweme_detail):
+                raise AdapterError(f"抖音请求失败：{exc}") from exc
+            r = None
+        aweme = None
+        if r is not None and r.status_code == 200:
+            try:
+                j = r.json()
+            except ValueError:
+                j = None
+            if j and j.get("status_code") in (0, None):
+                aweme = j.get("aweme_detail") or {}
+        # 浏览器兜底：API 被 Argus 门禁拦截（403 / Uifid Not Found）时
+        if not aweme and BROWSER_AVAILABLE and browser_fetch_aweme_detail:
+            await _call_cb(progress_cb, f"🌐 视频 {i + 1} API 被拦截，切换浏览器兜底解析…")
+            try:
+                aweme = await browser_fetch_aweme_detail(vid, cookie=cookie)
+            except Exception:
+                aweme = None
         if not aweme:
             skipped += 1
             continue
@@ -724,9 +743,31 @@ async def resolve_douyin_profile(
     ttwid = await _ensure_ttwid(client)
     authors: list[Author] = []
     for sec in sec_ids:
-        awemes, profile, capped = await _fetch_douyin_works(
-            client, ttwid, sec, cookie=cookie, progress_cb=progress_cb,
-        )
+        api_err = None
+        try:
+            awemes, profile, capped = await _fetch_douyin_works(
+                client, ttwid, sec, cookie=cookie, progress_cb=progress_cb,
+            )
+        except AdapterError as e:
+            api_err = e
+            awemes, profile, capped = [], {}, False
+        # 浏览器兜底：API 被 Argus 门禁拦截（403 / Uifid Not Found）或结果为空时
+        if not awemes and BROWSER_AVAILABLE and browser_fetch_profile_works:
+            await _call_cb(progress_cb, "🌐 API 被风控拦截，切换浏览器兜底解析主页作品…")
+            try:
+                awemes, profile, capped = await browser_fetch_profile_works(
+                    sec, cookie=cookie, progress_cb=progress_cb,
+                )
+            except Exception as be:
+                if api_err:
+                    raise AdapterError(
+                        f"抖音主页解析失败：API 与浏览器兜底均失败（{be}）"
+                    ) from api_err
+                raise AdapterError(f"抖音主页解析失败：浏览器兜底未获取到内容（{be}）")
+        if not awemes:
+            if api_err:
+                raise api_err
+            continue
         items: list[MediaItem] = []
         for aw in awemes:
             items.extend(_extract_douyin_items(aw, media_type))
