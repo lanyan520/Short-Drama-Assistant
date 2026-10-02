@@ -38,11 +38,15 @@ try:
     from .browser_fetch import (
         browser_fetch_profile_works,
         browser_fetch_aweme_detail,
+        browser_fetch_collection_works,
+        browser_fetch_favorites_works,
         BROWSER_AVAILABLE,
     )
 except Exception:
     browser_fetch_profile_works = None
     browser_fetch_aweme_detail = None
+    browser_fetch_collection_works = None
+    browser_fetch_favorites_works = None
     BROWSER_AVAILABLE = False
 
 
@@ -104,6 +108,53 @@ _RULE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "parse_rules.json"
 )
 _rule_lock = threading.Lock()
+
+# ----------------------------------------------------------------- 诊断日志
+# 历史教训：浏览器兜底曾经因为一个未定义变量（`cookie` 写成 `douyin_cookie`）
+# 抛 NameError，却被 `except Exception: aweme = None` 静默吞掉，
+# 表现为"兜底函数明明手工能跑通、服务里却永远返回未获取到内容"，排查了整整一轮。
+# 从此：任何被兜住的异常都必须落盘留痕，禁止裸吞。
+
+_DBG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "parse_debug.log"
+)
+_dbg_lock = threading.Lock()
+_DBG_MAX = 512 * 1024  # 超过 512KB 直接截半，避免无限增长
+
+
+def _dbg(tag: str, exc: BaseException | None = None, detail: str = "") -> None:
+    """把被兜住的异常写进 data/parse_debug.log，附带完整 traceback。"""
+    try:
+        import traceback as _tb
+
+        lines = [f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {tag}"]
+        if detail:
+            lines.append(f"    detail: {detail}")
+        if exc is not None:
+            lines.append(f"    {type(exc).__name__}: {exc}")
+            lines.append("    " + _tb.format_exc().replace("\n", "\n    ").rstrip())
+        blob = "\n".join(lines) + "\n"
+        with _dbg_lock:
+            try:
+                if os.path.exists(_DBG_PATH) and os.path.getsize(_DBG_PATH) > _DBG_MAX:
+                    with open(_DBG_PATH, "r", encoding="utf-8", errors="replace") as f:
+                        keep = f.read()[-_DBG_MAX // 2:]
+                    with open(_DBG_PATH, "w", encoding="utf-8") as f:
+                        f.write(keep)
+            except Exception:
+                pass
+            os.makedirs(os.path.dirname(_DBG_PATH), exist_ok=True)
+            with open(_DBG_PATH, "a", encoding="utf-8") as f:
+                f.write(blob)
+    except Exception:
+        pass  # 日志本身绝不能影响主流程
+    # 同时走标准 logging，方便被外层捕获
+    try:
+        import logging
+
+        logging.getLogger("parse_link").warning("%s %s", tag, detail or (exc and repr(exc)) or "")
+    except Exception:
+        pass
 
 
 def _rule_load() -> dict:
@@ -477,13 +528,18 @@ async def resolve_douyin(
             if j and j.get("status_code") in (0, None):
                 aweme = j.get("aweme_detail") or {}
         # 浏览器兜底：API 被 Argus 门禁拦截（403 / Uifid Not Found）时
+        # ⚠️ 必须传 douyin_cookie —— 本函数没有名为 cookie 的参数/局部变量。
+        #    历史上这里写成 `cookie=cookie`，抛 NameError 后被下面 except 裸吞，
+        #    结果「进度已提示切换兜底、兜底函数却从未被调用」，单作品解析长期完全失效。
         if not aweme and BROWSER_AVAILABLE and browser_fetch_aweme_detail:
             await _call_cb(progress_cb, f"🌐 视频 {i + 1} API 被拦截，切换浏览器兜底解析…")
             try:
-                aweme = await browser_fetch_aweme_detail(vid, cookie=cookie)
-            except Exception:
+                aweme = await browser_fetch_aweme_detail(vid, cookie=douyin_cookie)
+            except Exception as exc:
+                _dbg(f"单作品浏览器兜底失败 vid={vid}", exc)
                 aweme = None
         if not aweme:
+            _dbg(f"单作品解析未取得数据 vid={vid}", detail=f"api_status={getattr(r, 'status_code', None)} skipped={skipped + 1}")
             skipped += 1
             continue
         items = _extract_douyin_items(aweme, media_type)
@@ -885,14 +941,38 @@ async def resolve_douyin_collection(
         raise AdapterError("没有从输入中识别到抖音合集链接（形如 douyin.com/collection/xxxx）。")
     await _call_cb(progress_cb, f"正在解析抖音合集 {mix_id} …")
     ttwid = await _ensure_ttwid(client)
-    awemes, profile = await _fetch_douyin_collection(
-        client, ttwid, mix_id, cookie=cookie, progress_cb=progress_cb,
-    )
+    awemes: list[dict[str, Any]] = []
+    profile: dict[str, Any] = {}
+    api_err: AdapterError | None = None
+    try:
+        awemes, profile = await _fetch_douyin_collection(
+            client, ttwid, mix_id, cookie=cookie, progress_cb=progress_cb,
+        )
+    except AdapterError as exc:
+        api_err = exc
+        _dbg(f"合集 API 路径失败 mix_id={mix_id}", exc)
+
+    # 浏览器兜底：mix/aweme 同属 Argus 门禁范围，纯 API 基本必然被拦。
+    # ⚠️ 此前这里**完全没有兜底**，所以合集在门禁升级后一直不可用（规则库里零条 collection）。
+    if not awemes and BROWSER_AVAILABLE and browser_fetch_collection_works:
+        await _call_cb(progress_cb, "🌐 合集 API 被拦截，切换浏览器兜底解析…")
+        try:
+            awemes, profile, _capped = await browser_fetch_collection_works(
+                mix_id, cookie=cookie, progress_cb=progress_cb,
+            )
+        except Exception as exc:
+            _dbg(f"合集浏览器兜底失败 mix_id={mix_id}", exc)
+            if api_err:
+                raise AdapterError(
+                    f"抖音合集解析失败：API 与浏览器兜底均失败（{exc}）"
+                ) from api_err
+            raise AdapterError(f"抖音合集解析失败：浏览器兜底未获取到内容（{exc}）")
+
     items: list[MediaItem] = []
     for aw in awemes:
         items.extend(_extract_douyin_items(aw, media_type))
     if not items:
-        raise AdapterError("该合集没有可下载的作品（可能已失效或为空）。")
+        raise AdapterError("该合集没有可下载的作品（可能已失效或为空，或与所选的视频/图片分类不符）。")
     a = profile or {}
     nick = a.get("nickname") or ""
     return [Author(
@@ -997,26 +1077,58 @@ async def _fetch_douyin_favorite(
 
 async def resolve_douyin_favorites(
     client, folder_id="", media_type: MediaType = "auto", cookie: str = "",
-    progress_cb: ProgressCB = None,
+    progress_cb: ProgressCB = None, page_url: str = "",
 ) -> list[Author]:
-    """解析抖音收藏夹（登录用户自己的收藏）。必须传入登录态 Cookie（sessionid 等）。"""
+    """解析抖音收藏夹（登录用户自己的收藏）。
+
+    两条路都能走通，任一可用即可：
+    ① 带登录态 Cookie 走 favorite 接口；
+    ② 浏览器兜底 —— 复用真实 Chrome profile 的登录态，**不依赖上面的 Cookie**。
+    """
     if not _ABOGUS_OK:
         raise AdapterError("a_bogus 签名模块不可用，请确认已安装 gmssl 依赖。")
-    if not cookie:
+    await _call_cb(progress_cb, "正在解析抖音收藏夹…")
+    ttwid = await _ensure_ttwid(client)
+    awemes: list[dict[str, Any]] = []
+    profile: dict[str, Any] = {}
+    if cookie:
+        try:
+            awemes, profile = await _fetch_douyin_favorite(
+                client, ttwid, cookie, folder_id=folder_id, progress_cb=progress_cb,
+            )
+        except AdapterError as exc:
+            _dbg(f"收藏夹 API 路径失败 folder_id={folder_id}", exc)
+
+    # 浏览器兜底：Chrome profile 自带登录态，所以即使没配 http Cookie 也可能成功
+    if not awemes and BROWSER_AVAILABLE and browser_fetch_favorites_works:
+        await _call_cb(
+            progress_cb, "🌐 收藏夹 API 不可用，切换浏览器兜底（复用 Chrome 登录态）…"
+        )
+        try:
+            awemes, profile, _capped = await browser_fetch_favorites_works(
+                folder_id=folder_id, cookie=cookie, page_url=page_url,
+                progress_cb=progress_cb,
+            )
+        except Exception as exc:
+            _dbg(f"收藏夹浏览器兜底失败 folder_id={folder_id}", exc)
+            if not cookie:
+                raise AdapterError(
+                    "抖音收藏夹需要登录态。请在右上角「设置」里同步抖音 Cookie，"
+                    "或确保本机 Chrome 已登录抖音（浏览器兜底会复用它的登录态）。",
+                    need_cookie=True,
+                ) from exc
+            raise AdapterError(f"抖音收藏夹解析失败：浏览器兜底未获取到内容（{exc}）") from exc
+
+    if not awemes and not cookie:
         raise AdapterError(
             "抖音收藏夹需要登录态。请在右上角「设置」里同步抖音 Cookie（含 sessionid）后重试。",
             need_cookie=True,
         )
-    await _call_cb(progress_cb, "正在解析抖音收藏夹…")
-    ttwid = await _ensure_ttwid(client)
-    awemes, profile = await _fetch_douyin_favorite(
-        client, ttwid, cookie, folder_id=folder_id, progress_cb=progress_cb,
-    )
     items: list[MediaItem] = []
     for aw in awemes:
         items.extend(_extract_douyin_items(aw, media_type))
     if not items:
-        raise AdapterError("收藏夹中没有可下载的作品（可能为空，或当前 Cookie 无权限）。")
+        raise AdapterError("收藏夹中没有可下载的作品（可能为空，或与所选的视频/图片分类不符）。")
     a = profile or {}
     return [Author(
         id="favorites" + (f"_{folder_id}" if folder_id else ""),
@@ -1510,6 +1622,7 @@ async def parse(
                             )
                     return True
                 except AdapterError as exc:
+                    _dbg(f"解析 {kind} 失败（AdapterError）", exc, detail=exc.message)
                     cached = _cached_authors_for(dy_links, kind)
                     if cached:
                         authors.extend(cached)
@@ -1520,6 +1633,7 @@ async def parse(
                     notice = exc.message
                     return False
                 except Exception as exc:  # noqa: BLE001
+                    _dbg(f"解析 {kind} 失败（未预期异常）", exc)
                     cached = _cached_authors_for(dy_links, kind)
                     if cached:
                         authors.extend(cached)
@@ -1555,11 +1669,14 @@ async def parse(
                     ),
                 )
             for l in [x for x in dy_links if x.kind == "favorites"]:
+                # 收藏夹入口优先用用户粘贴的真实 URL（保留其所在的收藏子夹 tab），
+                # 只有短链形态才退回默认的「我的收藏」页。
+                fav_page = l.raw if l.raw.startswith("http") and "douyin.com" in l.raw else ""
                 await _run_kind(
                     "favorites",
                     resolve_douyin_favorites(
                         client, l.folder_id, media_type, cookie=douyin_cookie,
-                        progress_cb=progress_cb,
+                        progress_cb=progress_cb, page_url=fav_page,
                     ),
                 )
 

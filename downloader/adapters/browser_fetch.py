@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import queue
 import shutil
 import socket
 import subprocess
@@ -205,9 +206,19 @@ def _kill_chrome():
         pass
 
 
-def _new_tab(bc: _CDP) -> Optional[_CDP]:
+def _new_tab(bc: _CDP) -> tuple:
+    """新建标签页，返回 (页面 CDP 客户端, targetId)。
+
+    ⚠️ 调用方必须在自己 finally 里用 _close_target 把标签页也关掉。
+    只调 tc.close() 仅关闭 websocket、**不会关标签页** —— 历史上这里泄漏过：
+    实测堆到 29 个标签页，后台标签被 Chrome 节流后页面请求不再及时发出，
+    表现就是「兜底时好时坏、同样的链接时而能出时而超时」。
+    """
     before = {t.get("webSocketDebuggerUrl") for t in _http_get("/json/list") if t.get("webSocketDebuggerUrl")}
-    bc.send("Target.createTarget", {"url": "about:blank"})
+    res = bc.send("Target.createTarget", {"url": "about:blank"})
+    tid: Optional[str] = None
+    if isinstance(res, dict):
+        tid = (res.get("result") or {}).get("targetId")
     tws = None
     for _ in range(30):
         for t in _http_get("/json/list"):
@@ -219,11 +230,77 @@ def _new_tab(bc: _CDP) -> Optional[_CDP]:
             break
         time.sleep(0.3)
     if not tws:
-        return None
+        _close_target(bc, tid)
+        return None, tid
     tc = _CDP(tws)
     tc.send("Network.enable")
     tc.send("Page.enable")
-    return tc
+    return tc, tid
+
+
+def _close_target(bc: _CDP, target_id: Optional[str]) -> None:
+    """关掉一个标签页。失败不抛（清理动作不该影响主流程）。"""
+    if not target_id:
+        return
+    try:
+        bc.send("Target.closeTarget", {"targetId": target_id})
+    except Exception:
+        pass
+
+
+_STALE_URL_HINTS = (
+    "douyin.com", "iesdouyin.com", "verifycenter", "nocaptcha",
+    "captcha", "bytedance.com", "secsdk",
+)
+
+
+def _cleanup_stale_tabs(bc: _CDP, keep: int = 0) -> int:
+    """每次抓取前清场：关掉上一轮遗留的抖音 / 验证码标签页。
+
+    标签页累积会拖慢页面加载并触发 Chrome 的后台节流，是抓取不稳定的主因之一。
+    """
+    closed = 0
+    try:
+        ts = _http_get("/json/list")
+    except Exception:
+        return 0
+    victims = [
+        t for t in ts
+        if t.get("type") == "page"
+        and any(h in (t.get("url") or "") for h in _STALE_URL_HINTS)
+    ]
+    for t in victims[: max(0, len(victims) - keep)]:
+        _close_target(bc, t.get("id"))
+        closed += 1
+    if closed:
+        time.sleep(0.4)  # 给关闭动作一点时间落地
+    return closed
+
+
+_CAPTCHA_HINTS = ("verifycenter", "nocaptcha", "captcha", "/verify", "secsdk-captcha")
+
+
+def _current_href(tc: _CDP) -> str:
+    try:
+        r = tc.send("Runtime.evaluate", {"expression": "location.href", "returnByValue": True})
+        return str(((r or {}).get("result") or {}).get("result", {}).get("value") or "")
+    except Exception:
+        return ""
+
+
+def _assert_not_captcha(tc: _CDP, what: str) -> None:
+    """被抖音弹了验证码/风控页时立刻给出明确错误，而不是静默等超时。
+
+    这条以前完全没有：验证码页会被当成"加载慢"，白等 25 秒后返回空，
+    用户只看到笼统的"未获取到内容"，无从判断是登录态失效还是风控。
+    """
+    href = _current_href(tc)
+    if href and any(h in href for h in _CAPTCHA_HINTS):
+        raise RuntimeError(
+            f"抖音对「{what}」弹出了验证码/风控页（{href[:80]}）。"
+            "请在本机 Chrome 里手动打开抖音完成验证并确认仍处于登录状态，然后重试；"
+            "必要时调用 refresh_browser_profile() 重新复制登录 profile。"
+        )
 
 
 def _click_works_tab(tc: _CDP):
@@ -238,21 +315,53 @@ def _click_works_tab(tc: _CDP):
 
 # ----------------------------------------------------------------- 同步核心
 
-def _sync_profile_works(sec_uid: str, max_pages: int, idle_limit: int, q: "queue.Queue") -> tuple:
+# 列表类接口的 URL 特征。用「任一命中」而不是写死单一接口，
+# 接口改名、或多出新的列表接口时都不必再改代码。
+HINT_PROFILE = ("aweme/v1/web/aweme/post",)
+HINT_COLLECTION = ("aweme/v1/web/mix/aweme", "aweme/v1/web/aweme/collection")
+HINT_FAVORITE = ("aweme/v1/web/aweme/favorite", "aweme/v1/web/aweme/listcollection")
+WILDCARD = "*"  # 兜底：接受任意 /aweme/v1/web/ 且带 aweme_list 的响应（接口名未知时用）
+
+
+def _is_list_api(url: str, hints: tuple) -> bool:
+    if WILDCARD in hints:
+        return "/aweme/v1/web/" in url
+    return any(h in url for h in hints)
+
+
+def _sync_list_works(
+    page_url: str,
+    hints: tuple,
+    max_pages: int,
+    idle_limit: int,
+    q: "queue.Queue",
+    click_works_tab: bool = False,
+    wait_first: float = 10.0,
+) -> tuple:
+    """通用引擎：打开页面 → 滚动 → 在 CDP 层拦截列表接口响应并聚合。
+
+    主页作品 / 合集 / 收藏夹三者共用同一套机制（都是无限滚动 + aweme_list 分页），
+    差别只在入口 URL、接口特征和要不要先点一下「作品」tab。
+    返回 (awemes, profile_author, capped)，结构与调用方一致。
+    """
     if not ensure_browser():
         raise RuntimeError("浏览器兜底不可用：Chrome 未启动或 websocket 缺失")
     ver = _http_get("/json/version")
     bc = _CDP(ver["webSocketDebuggerUrl"])
     try:
-        tc = _new_tab(bc)
+        _cleanup_stale_tabs(bc)
+        tc, tid = _new_tab(bc)
         if not tc:
             raise RuntimeError("浏览器兜底失败：无法创建标签页")
         try:
-            tc.send("Page.navigate", {"url": f"https://www.douyin.com/user/{sec_uid}"})
-            time.sleep(10)
-            _click_works_tab(tc)
-            time.sleep(3)
-            seen: set = set()
+            tc.send("Page.navigate", {"url": page_url})
+            time.sleep(wait_first)
+            _assert_not_captcha(tc, page_url)
+            if click_works_tab:
+                _click_works_tab(tc)
+                time.sleep(3)
+            seen_rid: set = set()
+            seen_ids: set = set()
             awemes: list = []
             profile: dict = {}
             last = 0
@@ -263,29 +372,31 @@ def _sync_profile_works(sec_uid: str, max_pages: int, idle_limit: int, q: "queue
                 time.sleep(1.8)
                 for e in tc.drain("Network.responseReceived"):
                     url = e["params"].get("response", {}).get("url", "")
-                    if "aweme/v1/web/aweme/post" in url:
-                        rid = e["params"]["requestId"]
-                        if rid in seen:
-                            continue
-                        seen.add(rid)
-                        rr = tc.send("Network.getResponseBody", {"requestId": rid})
-                        if not rr or "result" not in rr:
-                            continue
-                        try:
-                            body = json.loads(rr["result"]["body"])
-                        except Exception:
-                            continue
-                        lst = body.get("aweme_list") or []
-                        if lst:
-                            for aw in lst:
-                                aid = str(aw.get("aweme_id") or "")
-                                if aid and aid not in seen:
-                                    seen.add(aid)
-                                    awemes.append(aw)
-                                    if not profile:
-                                        profile = aw.get("author") or {}
-                            if q is not None:
-                                q.put(f"🌐 浏览器兜底翻页中… 已获取 {len(awemes)} 个作品")
+                    if not _is_list_api(url, hints):
+                        continue
+                    rid = e["params"]["requestId"]
+                    if rid in seen_rid:
+                        continue
+                    seen_rid.add(rid)
+                    rr = tc.send("Network.getResponseBody", {"requestId": rid})
+                    if not rr or "result" not in rr:
+                        continue
+                    try:
+                        body = json.loads(rr["result"]["body"])
+                    except Exception:
+                        continue
+                    lst = body.get("aweme_list") or []
+                    if not lst:
+                        continue
+                    for aw in lst:
+                        aid = str(aw.get("aweme_id") or "")
+                        if aid and aid not in seen_ids:
+                            seen_ids.add(aid)
+                            awemes.append(aw)
+                            if not profile:
+                                profile = aw.get("author") or {}
+                    if q is not None:
+                        q.put(f"🌐 浏览器兜底翻页中… 已获取 {len(awemes)} 个作品")
                 if len(awemes) > last:
                     last = len(awemes)
                     idle = 0
@@ -293,11 +404,163 @@ def _sync_profile_works(sec_uid: str, max_pages: int, idle_limit: int, q: "queue
                     idle += 1
                     if idle >= idle_limit:
                         break
+            if not awemes:
+                _assert_not_captcha(tc, page_url)  # 一条都没抓到，先排除验证码
             return awemes, profile, False
         finally:
             tc.close()
+            _close_target(bc, tid)
     finally:
         bc.close()
+
+
+def _sync_profile_works(sec_uid: str, max_pages: int, idle_limit: int, q: "queue.Queue") -> tuple:
+    return _sync_list_works(
+        f"https://www.douyin.com/user/{sec_uid}",
+        HINT_PROFILE, max_pages, idle_limit, q,
+        click_works_tab=True,
+    )
+
+
+def _sync_collection_works(mix_id: str, max_pages: int, idle_limit: int, q: "queue.Queue") -> tuple:
+    return _sync_list_works(
+        f"https://www.douyin.com/collection/{mix_id}",
+        HINT_COLLECTION, max_pages, idle_limit, q,
+    )
+
+
+def _sync_favorites_works(
+    folder_id: str, max_pages: int, idle_limit: int, q: "queue.Queue", page_url: str = "",
+) -> tuple:
+    """收藏夹需登录态。入口优先用调用方给的真实 URL（保留用户所在的 tab），
+    否则退回默认的「我的收藏」页。接口名不确定，用通配匹配。"""
+    url = page_url or "https://www.douyin.com/user/self?showTab=favorite_collection"
+    if folder_id and "folder_id=" not in url:
+        url += ("&" if "?" in url else "?") + f"folder_id={folder_id}"
+    return _sync_list_works(
+        url, HINT_FAVORITE, max_pages, idle_limit, q,
+        click_works_tab=True,
+    )
+
+
+def _try_read_detail_body(tc: _CDP, rid: str, tries: int = 8, gap: float = 0.4) -> Optional[dict]:
+    """尝试读取某条 detail 请求的响应体。
+
+    ⚠️ CDP 的 Network 域**有时取不到 body**：实测响应明明是 200、非 Service Worker、
+    非缓存、loadingFinished 也已触发，`Network.getResponseBody` 仍返回
+    `-32000 No resource with given identifier found`。加大缓冲、禁缓存、绕过 SW、
+    改走 Fetch 域都试过，均无效 —— 这是**间歇性**的：同一作品换个时机重新加载通常就能拿到。
+    因此这里做「短间隔多次重试 + 整体重新导航」两级兜底，而不是一次失败就放弃。
+    """
+    for _ in range(tries):
+        rr = tc.send("Network.getResponseBody", {"requestId": rid})
+        if rr and "result" in rr:
+            try:
+                b = json.loads(rr["result"].get("body") or "")
+            except Exception:
+                b = None
+            if isinstance(b, dict) and b.get("aweme_detail"):
+                return b["aweme_detail"]
+        time.sleep(gap)
+    return None
+
+
+_DOM_EXTRACT_JS = r"""
+(function(){
+  var out = { title: document.title || '', imgs: [], author: '', sec: '' };
+  var seen = {};
+  var nodes = document.querySelectorAll('img, source');
+  for (var i = 0; i < nodes.length; i++) {
+    var s = nodes[i].currentSrc || nodes[i].src || '';
+    if (!s) continue;
+    if (s.indexOf('aweme-images') < 0 && s.indexOf('aweme_image') < 0) continue;
+    if (seen[s]) continue;
+    seen[s] = 1;
+    out.imgs.push(s);
+  }
+  // 作者名只认页面自带的元数据。
+  // ⚠️ 不要从 a[href*="/user/"] 里猜：图文页会挂一串「关联创作者」链接，
+  //    实测抓到的是别人（黄昏 HUANGHUN），而这篇的作者其实是芃芃与AIGC。
+  //    错挂一个创作者名比留空更糟 —— 取不到就返回空，让上游显示通用名。
+  try {
+    var m = document.querySelector('meta[name="author"]');
+    if (m && (m.content || '').trim()) out.author = m.content.trim().slice(0, 40);
+    if (!out.author) {
+      var ld = document.querySelector('script[type="application/ld+json"]');
+      if (ld) {
+        var j = JSON.parse(ld.textContent);
+        var a = j && j.author;
+        var nm = a && (a.name || (typeof a === 'string' ? a : ''));
+        if (nm) out.author = String(nm).trim().slice(0, 40);
+      }
+    }
+  } catch (e) {}
+  return JSON.stringify(out);
+})()
+"""
+
+
+def _grab_detail_from_dom(tc: _CDP, url: str, wait: float = 9.0) -> Optional[dict]:
+    """接口响应体拿不到时，退而从**渲染好的页面**里直接取数据。
+
+    抖音图集页会把图片以 `tplv-dy-aweme-images` 模板渲染进 DOM，同时 `document.title`
+    就是作品的完整文案。这条路完全不经过接口响应体，因此不受 CDP 偶发取不到 body 的影响
+    —— 实测图文（aweme_type=68）正是最容易触发那个间歇性失败的类别。
+
+    局限：拿不到 author 的完整字段（只能从页面链接里取昵称与 sec_uid），
+    计数类字段为空；但对「把图片下全」这个目的已经够用。
+    """
+    tc.send("Page.navigate", {"url": url})
+    time.sleep(wait)
+    _assert_not_captcha(tc, url)
+    # 轻微滚动，触发图集懒加载
+    tc.send("Input.dispatchMouseEvent",
+            {"type": "mouseWheel", "x": 400, "y": 400, "deltaX": 0, "deltaY": 900}, wait=False)
+    time.sleep(2.0)
+    r = tc.send("Runtime.evaluate", {"expression": _DOM_EXTRACT_JS, "returnByValue": True})
+    val = ((r or {}).get("result") or {}).get("result", {}).get("value")
+    if not val:
+        return None
+    try:
+        d = json.loads(val)
+    except Exception:
+        return None
+    imgs = [u for u in (d.get("imgs") or []) if isinstance(u, str) and u.startswith("http")]
+    if not imgs:
+        return None
+    vid = url.rstrip("/").rsplit("/", 1)[-1]
+    author = {"nickname": d.get("author") or ""}
+    if d.get("sec"):
+        author["sec_uid"] = d["sec"]
+    # document.title 形如「<作品文案> - 抖音」，去掉平台后缀，让 desc 与接口路径一致
+    desc = (d.get("title") or "").strip()
+    for tail in (" - 抖音", "－抖音"):
+        if desc.endswith(tail):
+            desc = desc[: -len(tail)].strip()
+    return {
+        "aweme_id": vid,
+        "desc": desc,
+        "aweme_type": 68,
+        "images": [{"url_list": [u]} for u in imgs],
+        "author": author,
+        "_from_dom": True,
+    }
+
+
+def _grab_detail_once(tc: _CDP, url: str, timeout: int = 20) -> Optional[dict]:
+    """导航并尝试抓一次详情。"""
+    tc.send("Page.navigate", {"url": url})
+    for i in range(timeout):
+        for e in tc.drain("Network.responseReceived"):
+            u = e["params"].get("response", {}).get("url", "")
+            if "aweme/v1/web/aweme/detail" in u:
+                aw = _try_read_detail_body(tc, e["params"]["requestId"])
+                if aw:
+                    return aw
+        if i == 6:
+            _assert_not_captcha(tc, url)  # 等了 7 秒还没到，先排除验证码
+        time.sleep(1)
+    return None
 
 
 def _sync_detail(video_id: str, q: "queue.Queue") -> Optional[dict]:
@@ -308,33 +571,32 @@ def _sync_detail(video_id: str, q: "queue.Queue") -> Optional[dict]:
     ver = _http_get("/json/version")
     bc = _CDP(ver["webSocketDebuggerUrl"])
     try:
-        tc = _new_tab(bc)
+        _cleanup_stale_tabs(bc)
+        tc, tid = _new_tab(bc)
         if not tc:
             raise RuntimeError("浏览器兜底失败：无法创建标签页")
         try:
-            tc.send("Page.navigate", {"url": url})
-            result = None
-            for _ in range(25):
-                for e in tc.drain("Network.responseReceived"):
-                    u = e["params"].get("response", {}).get("url", "")
-                    if "aweme/v1/web/aweme/detail" in u:
-                        rid = e["params"]["requestId"]
-                        rr = tc.send("Network.getResponseBody", {"requestId": rid})
-                        if rr and "result" in rr:
-                            try:
-                                b = json.loads(rr["result"]["body"])
-                            except Exception:
-                                continue
-                            aw = b.get("aweme_detail")
-                            if aw:
-                                result = aw
-                                break
-                if result:
-                    break
-                time.sleep(1)
-            return result
+            # 最多三轮重新导航：CDP 偶发取不到响应体，重新加载往往就能拿到。
+            # 实测「图文（aweme_type=68）」比「视频」更容易命中这个间歇性失败，
+            # 而图文恰好是本模块之前完全没有兜底能力的一类。
+            for attempt in range(3):
+                aw = _grab_detail_once(tc, url, timeout=20 if attempt == 0 else 14)
+                if aw:
+                    if attempt:
+                        print(f"[browser_fetch] detail 第 {attempt + 1} 轮才取到 vid={vid}", flush=True)
+                    return aw
+                if attempt < 2:
+                    time.sleep(1.5)
+            # 三条接口路径都没拿到 body → 退到 DOM 直取（不经过接口响应体）
+            aw = _grab_detail_from_dom(tc, url)
+            if aw:
+                print(f"[browser_fetch] detail 接口取体失败，已改用 DOM 直取 vid={vid} "
+                      f"imgs={len(aw.get('images') or [])}", flush=True)
+                return aw
+            return None
         finally:
             tc.close()
+            _close_target(bc, tid)
     finally:
         bc.close()
 
@@ -393,3 +655,71 @@ async def browser_fetch_aweme_detail(
     q: "_queue.Queue" = _queue.Queue()
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _sync_detail, video_id, q)
+
+
+async def _await_with_progress(fut, q: "queue.Queue", progress_cb: ProgressCB) -> Any:
+    """等待线程池任务跑完，同时把线程推来的进度消息转成异步回调。"""
+    if progress_cb:
+        while not fut.done():
+            try:
+                msg = q.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.2)
+                continue
+            await progress_cb(msg)
+    result = await fut
+    if progress_cb:
+        while not q.empty():
+            await progress_cb(q.get_nowait())
+    return result
+
+
+async def browser_fetch_collection_works(
+    mix_id: str,
+    cookie: str = "",
+    progress_cb: ProgressCB = None,
+    max_pages: int = 80,
+    idle_limit: int = 6,
+) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
+    """浏览器兜底：打开合集页，滚动加载并拦截 mix/aweme 响应。
+
+    合集此前**没有任何兜底路径**，在 Argus 门禁下纯 API 必然 403，因此长期不可用。
+    """
+    if not BROWSER_AVAILABLE:
+        raise RuntimeError("浏览器兜底不可用（websocket-client 未安装或系统无 Chrome）")
+    q: "queue.Queue" = queue.Queue()
+    loop = asyncio.get_event_loop()
+    fut = loop.run_in_executor(None, _sync_collection_works, mix_id, max_pages, idle_limit, q)
+    awemes, profile, capped = await _await_with_progress(fut, q, progress_cb)
+    if not awemes:
+        raise RuntimeError("浏览器兜底失败：未拦截到合集作品（合集可能已失效或需登录）")
+    return awemes, profile, capped
+
+
+async def browser_fetch_favorites_works(
+    folder_id: str = "",
+    cookie: str = "",
+    page_url: str = "",
+    progress_cb: ProgressCB = None,
+    max_pages: int = 120,
+    idle_limit: int = 8,
+) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
+    """浏览器兜底：打开「我的收藏」页并拦截分页响应。
+
+    前提：Chrome 真实 profile 里带有**有效登录态**（收藏夹是登录用户私有数据）。
+    入口 URL 优先用调用方传入的真实 URL，以保留用户所在的收藏子夹。
+    """
+    if not BROWSER_AVAILABLE:
+        raise RuntimeError("浏览器兜底不可用（websocket-client 未安装或系统无 Chrome）")
+    q: "queue.Queue" = queue.Queue()
+    loop = asyncio.get_event_loop()
+    fut = loop.run_in_executor(
+        None, _sync_favorites_works, folder_id, max_pages, idle_limit, q, page_url
+    )
+    awemes, profile, capped = await _await_with_progress(fut, q, progress_cb)
+    if not awemes:
+        raise RuntimeError(
+            "浏览器兜底失败：未拦截到收藏作品。收藏夹必须已登录，"
+            "且 Chrome profile 里的登录态仍然有效（过期请重新登录 Chrome）。"
+        )
+    return awemes, profile, capped
